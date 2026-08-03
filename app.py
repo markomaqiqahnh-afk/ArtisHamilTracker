@@ -126,6 +126,38 @@ def get_all_search_terms():
     return DEFAULT_KEYWORDS + extra
 
 
+BULAN_INDO = {
+    "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
+    "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11, "desember": 12,
+}
+
+
+def parse_hpl(teks):
+    """Ubah teks HPL semacam 'September 2026' atau '31 Juli 2026' jadi datetime.
+    Return None kalau tidak bisa dibaca (kosong, '?', format aneh, dll)."""
+    if not teks:
+        return None
+    teks = teks.strip().lower()
+    if not teks or teks == "?":
+        return None
+
+    tahun = None
+    bulan = None
+    for kata in teks.replace(",", " ").split():
+        kata_bersih = "".join(ch for ch in kata if ch.isalpha())
+        if kata_bersih in BULAN_INDO:
+            bulan = BULAN_INDO[kata_bersih]
+        elif kata.isdigit() and len(kata) == 4:
+            tahun = int(kata)
+
+    if bulan and tahun:
+        try:
+            return datetime(tahun, bulan, 1)
+        except ValueError:
+            return None
+    return None
+
+
 def simpan_berita(items):
     conn = get_db()
     baru = 0
@@ -351,6 +383,24 @@ TEMPLATE_TRACKER = """
     <div class="toolbar">
         <a href="{{ url_for('tambah_lead') }}" class="btn">+ Tambah Public Figure</a>
         <a href="{{ url_for('import_csv') }}" class="btn btn-secondary">📤 Import dari CSV</a>
+
+        <form method="get" style="display:flex; gap:8px; align-items:center; margin-left:auto;">
+            <label style="font-size:13px; color:#666;">Urutkan:</label>
+            <select name="sort" onchange="this.form.submit()">
+                <option value="terbaru" {{ 'selected' if sort == 'terbaru' else '' }}>Baru ditambahkan</option>
+                <option value="hpl_terdekat" {{ 'selected' if sort == 'hpl_terdekat' else '' }}>HPL Paling Dekat</option>
+                <option value="hpl_terjauh" {{ 'selected' if sort == 'hpl_terjauh' else '' }}>HPL Paling Jauh</option>
+                <option value="bulan" {{ 'selected' if sort == 'bulan' else '' }}>Kode Sort (Bulan)</option>
+                <option value="nama" {{ 'selected' if sort == 'nama' else '' }}>Nama A-Z</option>
+            </select>
+
+            <label style="font-size:13px; color:#666;">Status:</label>
+            <select name="status" onchange="this.form.submit()">
+                <option value="semua" {{ 'selected' if status_filter == 'semua' else '' }}>Semua</option>
+                <option value="AKTIF" {{ 'selected' if status_filter == 'AKTIF' else '' }}>Aktif saja</option>
+                <option value="TIDAK AKTIF" {{ 'selected' if status_filter == 'TIDAK AKTIF' else '' }}>Tidak Aktif saja</option>
+            </select>
+        </form>
     </div>
 
     <div class="table-scroll">
@@ -668,13 +718,37 @@ def api_berita():
 
 @app.route("/tracker")
 def tracker():
+    sort = request.args.get("sort", "terbaru")
+    status_filter = request.args.get("status", "semua")
+
     conn = get_db()
-    leads = conn.execute("SELECT * FROM leads ORDER BY id DESC").fetchall()
+    query = "SELECT * FROM leads"
+    params = []
+    if status_filter in ("AKTIF", "TIDAK AKTIF"):
+        query += " WHERE aktif = ?"
+        params.append(status_filter)
+    query += " ORDER BY id DESC"
+    leads = conn.execute(query, params).fetchall()
     conn.close()
+
+    leads = list(leads)
+    if sort == "hpl_terdekat":
+        leads.sort(key=lambda l: (parse_hpl(l["hpl"]) is None, parse_hpl(l["hpl"]) or datetime.max))
+    elif sort == "hpl_terjauh":
+        leads.sort(key=lambda l: (parse_hpl(l["hpl"]) is None, parse_hpl(l["hpl"]) or datetime.min), reverse=True)
+        # baris tanpa HPL tetap taruh di akhir meski reverse
+        leads.sort(key=lambda l: parse_hpl(l["hpl"]) is None)
+    elif sort == "nama":
+        leads.sort(key=lambda l: (l["nama"] or "").lower())
+    elif sort == "bulan":
+        leads.sort(key=lambda l: (l["bulan"] is None or l["bulan"] == "", l["bulan"] or ""))
+    # sort == "terbaru" -> biarkan urutan default (ORDER BY id DESC dari query)
+
     flash_msg = request.args.get("msg")
     flash_ok = request.args.get("ok") == "1"
     return render_template_string(
-        TEMPLATE_TRACKER, leads=leads, flash_msg=flash_msg, flash_ok=flash_ok
+        TEMPLATE_TRACKER, leads=leads, flash_msg=flash_msg, flash_ok=flash_ok,
+        sort=sort, status_filter=status_filter,
     )
 
 
