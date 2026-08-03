@@ -30,11 +30,30 @@ DB_FILE = "berita.db"
 
 DEFAULT_KEYWORDS = [
     "artis hamil",
-    "selebriti hamil",
-    "umumkan kehamilan",
+    "selebgram hamil",
+    "tokoh publik hamil",
+    "pejabat hamil",
+    "istri pejabat hamil",
+    "istri ustadz hamil",
 ]
 
 AUTO_REFRESH_INTERVAL = 3 * 60 * 60  # 3 jam
+
+# Kata-kata penanda berita luar negeri — berita yang judulnya mengandung
+# salah satu kata ini akan otomatis disembunyikan. Bisa diedit sesuai kebutuhan.
+FOREIGN_BLOCKLIST = [
+    "hollywood", "bollywood", "k-pop", "kpop", "korea selatan", "korea utara",
+    "artis korea", "aktris korea", "aktor korea", "idol korea", "girband korea",
+    "boyband korea", "artis jepang", "aktris jepang", "artis india", "bintang india",
+    "artis hong kong", "artis taiwan", "artis china", "artis tiongkok",
+    "amerika serikat", "aktris amerika", "aktor amerika", "artis amerika",
+    "bintang hollywood", "selebriti hollywood", "inggris raya",
+]
+
+
+def is_berita_luar_negeri(judul: str) -> bool:
+    judul_lower = (judul or "").lower()
+    return any(kata in judul_lower for kata in FOREIGN_BLOCKLIST)
 
 # Header supaya request kita dianggap seperti browser biasa, bukan bot
 HEADERS = {
@@ -206,6 +225,8 @@ def fetch_news_for_term(term: str):
 
     results = []
     for entry in feed.entries:
+        if is_berita_luar_negeri(entry.title):
+            continue  # lewati berita yang kelihatan dari luar negeri
         tanggal_iso = ""
         if getattr(entry, "published_parsed", None):
             try:
@@ -637,13 +658,15 @@ TEMPLATE_IMPORT = """
 @app.route("/")
 def index():
     conn = get_db()
-    berita = conn.execute(
+    semua_berita = conn.execute(
         """SELECT * FROM berita
            ORDER BY
              CASE WHEN tanggal_terbit_iso = '' OR tanggal_terbit_iso IS NULL THEN 1 ELSE 0 END,
              tanggal_terbit_iso DESC
-           LIMIT 100"""
+           LIMIT 200"""
     ).fetchall()
+    # Saring juga berita lama yang mungkin sudah tersimpan sebelum filter ini ada
+    berita = [b for b in semua_berita if not is_berita_luar_negeri(b["judul"])][:100]
     total = conn.execute("SELECT COUNT(*) as c FROM berita").fetchone()["c"]
     kw_rows = get_all_keywords_rows()
     conn.close()
