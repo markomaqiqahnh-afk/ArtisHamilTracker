@@ -16,6 +16,8 @@ import sqlite3
 import urllib.parse
 import threading
 import time
+import csv
+import io
 from datetime import datetime
 
 import requests
@@ -78,6 +80,12 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nama TEXT NOT NULL,
             domisili TEXT,
+            rate_card TEXT,
+            followers_ig TEXT,
+            followers_tiktok TEXT,
+            followers_fb TEXT,
+            rata2_views TEXT,
+            link_sosmed TEXT,
             no_wa TEXT,
             hpl TEXT,
             kontak_pertama_tanggal TEXT,
@@ -87,11 +95,20 @@ def init_db():
             followup_terakhir_tanggal TEXT,
             hasil_akhir TEXT,
             keterangan TEXT,
-            bulan INTEGER,
+            bulan TEXT,
             aktif TEXT DEFAULT 'AKTIF',
             dibuat_pada TEXT
         )
     """)
+    # Tambahkan kolom baru kalau database lama sudah ada duluan (migrasi ringan)
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(leads)").fetchall()}
+    kolom_baru = {
+        "rate_card": "TEXT", "followers_ig": "TEXT", "followers_tiktok": "TEXT",
+        "followers_fb": "TEXT", "rata2_views": "TEXT", "link_sosmed": "TEXT",
+    }
+    for kolom, tipe in kolom_baru.items():
+        if kolom not in existing_cols:
+            conn.execute(f"ALTER TABLE leads ADD COLUMN {kolom} {tipe}")
     conn.commit()
     conn.close()
 
@@ -333,6 +350,7 @@ TEMPLATE_TRACKER = """
 
     <div class="toolbar">
         <a href="{{ url_for('tambah_lead') }}" class="btn">+ Tambah Public Figure</a>
+        <a href="{{ url_for('import_csv') }}" class="btn btn-secondary">📤 Import dari CSV</a>
     </div>
 
     <div class="table-scroll">
@@ -342,6 +360,12 @@ TEMPLATE_TRACKER = """
                 <th>No</th>
                 <th>Nama Public Figure</th>
                 <th>Domisili</th>
+                <th>Rate Card</th>
+                <th>Followers IG</th>
+                <th>Followers TikTok</th>
+                <th>Followers FB</th>
+                <th>Rata2 Views</th>
+                <th>Link Sosmed</th>
                 <th>No WA</th>
                 <th>HPL</th>
                 <th>Kontak Pertama (Tgl)</th>
@@ -362,6 +386,12 @@ TEMPLATE_TRACKER = """
                 <td>{{ loop.index }}</td>
                 <td>{{ l.nama }}</td>
                 <td>{{ l.domisili or '' }}</td>
+                <td>{{ l.rate_card or '' }}</td>
+                <td>{{ l.followers_ig or '' }}</td>
+                <td>{{ l.followers_tiktok or '' }}</td>
+                <td>{{ l.followers_fb or '' }}</td>
+                <td>{{ l.rata2_views or '' }}</td>
+                <td>{% if l.link_sosmed %}<a href="{{ l.link_sosmed.split(',')[0].strip() }}" target="_blank">Link</a>{% endif %}</td>
                 <td>{{ l.no_wa or '' }}</td>
                 <td>{{ l.hpl or '' }}</td>
                 <td>{{ l.kontak_pertama_tanggal or '' }}</td>
@@ -382,7 +412,7 @@ TEMPLATE_TRACKER = """
             </tr>
             {% endfor %}
             {% if leads|length == 0 %}
-            <tr><td colspan="15" class="empty">Belum ada data. Klik "+ Tambah Public Figure" untuk mulai.</td></tr>
+            <tr><td colspan="21" class="empty">Belum ada data. Klik "+ Tambah Public Figure" untuk mulai.</td></tr>
             {% endif %}
         </tbody>
     </table>
@@ -417,6 +447,30 @@ TEMPLATE_FORM_LEAD = """
         <div>
             <label>Domisili</label>
             <input type="text" name="domisili" value="{{ lead.domisili if lead else '' }}">
+        </div>
+        <div>
+            <label>Rate Card</label>
+            <input type="text" name="rate_card" value="{{ lead.rate_card if lead else '' }}">
+        </div>
+        <div>
+            <label>Followers Instagram</label>
+            <input type="text" name="followers_ig" value="{{ lead.followers_ig if lead else '' }}">
+        </div>
+        <div>
+            <label>Followers TikTok</label>
+            <input type="text" name="followers_tiktok" value="{{ lead.followers_tiktok if lead else '' }}">
+        </div>
+        <div>
+            <label>Followers Facebook</label>
+            <input type="text" name="followers_fb" value="{{ lead.followers_fb if lead else '' }}">
+        </div>
+        <div>
+            <label>Rata-rata Views</label>
+            <input type="text" name="rata2_views" value="{{ lead.rata2_views if lead else '' }}">
+        </div>
+        <div class="full">
+            <label>Link Sosmed</label>
+            <input type="text" name="link_sosmed" value="{{ lead.link_sosmed if lead else '' }}">
         </div>
         <div>
             <label>No WA</label>
@@ -474,6 +528,52 @@ TEMPLATE_FORM_LEAD = """
             <a href="{{ url_for('tracker') }}" class="btn btn-secondary">Batal</a>
         </div>
     </form>
+</div>
+</body>
+</html>
+"""
+
+
+TEMPLATE_IMPORT = """
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Import CSV</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+""" + BASE_STYLE + """
+</head>
+<body>
+<div class="wrap">
+    <h1>🎀 Import Data dari CSV</h1>
+    <div class="tabs">
+        <a class="tab" href="{{ url_for('index') }}">Berita Terbaru</a>
+        <a class="tab active" href="{{ url_for('tracker') }}">Tracker Follow Up</a>
+    </div>
+
+    {% if flash_msg %}
+    <div class="flash {{ 'flash-ok' if flash_ok else 'flash-error' }}">{{ flash_msg }}</div>
+    {% endif %}
+
+    <div class="card">
+        <p style="margin-top:0;">
+            Upload file CSV dengan format kolom seperti spreadsheet tracker kamu:
+            <strong>NO, NAMA PUBLIC FIGURE, DOMISILI, RATE CARD, JUMLAH FOLLOWERS (Instagram/TikTok/FB),
+            RATA2 VIEWS, LINK SOSMED, NO WA, HPL, KONTAK PERTAMA (Tanggal/Hasil),
+            FOLLOW UP LANJUTAN (Tanggal/Hasil), FOLLOW UP TERAKHIR (Tanggal/Hasil Akhir/Keterangan),
+            KODE SORT (BULAN/AKTIF)</strong>.
+        </p>
+        <p style="color:#888; font-size: 13px;">
+            Baris duplikat (nama + no WA yang sama persis dengan data yang sudah ada) akan dilewati otomatis,
+            jadi aman kalau kamu upload file yang sama dua kali.
+        </p>
+        <form method="post" enctype="multipart/form-data">
+            <input type="file" name="file_csv" accept=".csv" required>
+            <br><br>
+            <button type="submit">Upload &amp; Import</button>
+            <a href="{{ url_for('tracker') }}" class="btn btn-secondary">Batal</a>
+        </form>
+    </div>
 </div>
 </body>
 </html>
@@ -582,6 +682,12 @@ def form_ke_dict(form):
     return {
         "nama": form.get("nama", "").strip(),
         "domisili": form.get("domisili", "").strip(),
+        "rate_card": form.get("rate_card", "").strip(),
+        "followers_ig": form.get("followers_ig", "").strip(),
+        "followers_tiktok": form.get("followers_tiktok", "").strip(),
+        "followers_fb": form.get("followers_fb", "").strip(),
+        "rata2_views": form.get("rata2_views", "").strip(),
+        "link_sosmed": form.get("link_sosmed", "").strip(),
         "no_wa": form.get("no_wa", "").strip(),
         "hpl": form.get("hpl", "").strip(),
         "kontak_pertama_tanggal": form.get("kontak_pertama_tanggal", "").strip(),
@@ -605,12 +711,14 @@ def tambah_lead():
         conn = get_db()
         conn.execute(
             """INSERT INTO leads
-               (nama, domisili, no_wa, hpl, kontak_pertama_tanggal, kontak_pertama_hasil,
+               (nama, domisili, rate_card, followers_ig, followers_tiktok, followers_fb,
+                rata2_views, link_sosmed, no_wa, hpl, kontak_pertama_tanggal, kontak_pertama_hasil,
                 followup_lanjutan_tanggal, followup_lanjutan_hasil, followup_terakhir_tanggal,
                 hasil_akhir, keterangan, bulan, aktif, dibuat_pada)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                d["nama"], d["domisili"], d["no_wa"], d["hpl"],
+                d["nama"], d["domisili"], d["rate_card"], d["followers_ig"], d["followers_tiktok"],
+                d["followers_fb"], d["rata2_views"], d["link_sosmed"], d["no_wa"], d["hpl"],
                 d["kontak_pertama_tanggal"], d["kontak_pertama_hasil"],
                 d["followup_lanjutan_tanggal"], d["followup_lanjutan_hasil"],
                 d["followup_terakhir_tanggal"], d["hasil_akhir"], d["keterangan"],
@@ -629,13 +737,15 @@ def edit_lead(lead_id):
     if request.method == "POST":
         d = form_ke_dict(request.form)
         conn.execute(
-            """UPDATE leads SET nama=?, domisili=?, no_wa=?, hpl=?,
+            """UPDATE leads SET nama=?, domisili=?, rate_card=?, followers_ig=?, followers_tiktok=?,
+               followers_fb=?, rata2_views=?, link_sosmed=?, no_wa=?, hpl=?,
                kontak_pertama_tanggal=?, kontak_pertama_hasil=?,
                followup_lanjutan_tanggal=?, followup_lanjutan_hasil=?,
                followup_terakhir_tanggal=?, hasil_akhir=?, keterangan=?,
                bulan=?, aktif=? WHERE id=?""",
             (
-                d["nama"], d["domisili"], d["no_wa"], d["hpl"],
+                d["nama"], d["domisili"], d["rate_card"], d["followers_ig"], d["followers_tiktok"],
+                d["followers_fb"], d["rata2_views"], d["link_sosmed"], d["no_wa"], d["hpl"],
                 d["kontak_pertama_tanggal"], d["kontak_pertama_hasil"],
                 d["followup_lanjutan_tanggal"], d["followup_lanjutan_hasil"],
                 d["followup_terakhir_tanggal"], d["hasil_akhir"], d["keterangan"],
@@ -651,6 +761,103 @@ def edit_lead(lead_id):
     if lead is None:
         return redirect(url_for("tracker"))
     return render_template_string(TEMPLATE_FORM_LEAD, lead=lead)
+
+
+def parse_angka_bulan(nilai):
+    """Ambil angka dari teks kode sort bulan, kalau tidak ada angka return None."""
+    nilai = (nilai or "").strip()
+    if nilai.isdigit():
+        return nilai
+    return nilai or None
+
+
+@app.route("/tracker/import", methods=["GET", "POST"])
+def import_csv():
+    if request.method == "GET":
+        return render_template_string(TEMPLATE_IMPORT, flash_msg=None, flash_ok=True)
+
+    file = request.files.get("file_csv")
+    if not file or file.filename == "":
+        return render_template_string(
+            TEMPLATE_IMPORT, flash_msg="Pilih file CSV terlebih dahulu.", flash_ok=False
+        )
+
+    try:
+        konten = file.stream.read().decode("utf-8-sig")
+        reader = list(csv.reader(io.StringIO(konten)))
+    except Exception as e:
+        return render_template_string(
+            TEMPLATE_IMPORT, flash_msg=f"Gagal membaca file: {e}", flash_ok=False
+        )
+
+    # Lewati 2 baris header (baris judul kolom & sub-judul kolom)
+    baris_data = reader[2:] if len(reader) > 2 else []
+
+    conn = get_db()
+    # Ambil kombinasi nama+wa yang sudah ada, untuk cegah duplikat
+    sudah_ada = set()
+    for row in conn.execute("SELECT nama, no_wa FROM leads").fetchall():
+        sudah_ada.add((row["nama"].strip().lower(), (row["no_wa"] or "").strip()))
+
+    ditambahkan = 0
+    dilewati = 0
+
+    for row in baris_data:
+        # Pastikan baris punya cukup kolom, isi kosong kalau kurang
+        row = row + [""] * (20 - len(row))
+
+        nama = row[1].strip()
+        if not nama:
+            continue  # baris kosong, lewati
+
+        no_wa = row[9].strip()
+        kunci = (nama.lower(), no_wa)
+        if kunci in sudah_ada:
+            dilewati += 1
+            continue
+
+        conn.execute(
+            """INSERT INTO leads
+               (nama, domisili, rate_card, followers_ig, followers_tiktok, followers_fb,
+                rata2_views, link_sosmed, no_wa, hpl, kontak_pertama_tanggal, kontak_pertama_hasil,
+                followup_lanjutan_tanggal, followup_lanjutan_hasil, followup_terakhir_tanggal,
+                hasil_akhir, keterangan, bulan, aktif, dibuat_pada)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                nama,
+                row[2].strip(),
+                row[3].strip(),
+                row[4].strip(),
+                row[5].strip(),
+                row[6].strip(),
+                row[7].strip(),
+                row[8].strip(),
+                no_wa,
+                row[10].strip(),
+                row[11].strip(),
+                row[12].strip(),
+                row[13].strip(),
+                row[14].strip(),
+                row[15].strip(),
+                row[16].strip(),
+                row[17].strip(),
+                parse_angka_bulan(row[18]),
+                row[19].strip() or "AKTIF",
+                datetime.now().isoformat(),
+            ),
+        )
+        sudah_ada.add(kunci)
+        ditambahkan += 1
+
+    conn.commit()
+    conn.close()
+
+    msg = f"Import selesai: {ditambahkan} data baru ditambahkan"
+    if dilewati:
+        msg += f", {dilewati} dilewati karena sudah ada sebelumnya"
+    msg += "."
+
+    return redirect(url_for("tracker", msg=msg, ok="1"))
 
 
 @app.route("/tracker/hapus/<int:lead_id>", methods=["POST"])
