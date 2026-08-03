@@ -31,10 +31,10 @@ DB_FILE = "berita.db"
 DEFAULT_KEYWORDS = [
     "artis hamil",
     "selebgram hamil",
-    "tokoh publik hamil",
-    "pejabat hamil",
-    "istri pejabat hamil",
-    "istri ustadz hamil",
+    '"tokoh publik" hamil',
+    '"pejabat" hamil',
+    '"istri pejabat" hamil',
+    '"istri ustadz" hamil',
 ]
 
 AUTO_REFRESH_INTERVAL = 3 * 60 * 60  # 3 jam
@@ -50,10 +50,24 @@ FOREIGN_BLOCKLIST = [
     "bintang hollywood", "selebriti hollywood", "inggris raya",
 ]
 
+# Kata-kata penanda berita "generik" (program pemerintah/sosial desa, dll)
+# yang cuma kebetulan menyebut kata "hamil" tapi bukan tentang public figure.
+GENERIC_BLOCKLIST = [
+    "stunting", "posyandu", "puskesmas", "asn jadi", "orang tua asuh",
+    "ditandu", "diseberangkan dengan rakit", "kader kesehatan", "bidan desa",
+    "dinas kesehatan", "cegah stunting", "gizi buruk", "kabupaten merdeka",
+    "hut ri", "tahun indonesia merdeka", "kolaborasi pemkab", "kolaborasi pemkot",
+]
+
 
 def is_berita_luar_negeri(judul: str) -> bool:
     judul_lower = (judul or "").lower()
     return any(kata in judul_lower for kata in FOREIGN_BLOCKLIST)
+
+
+def is_berita_tidak_relevan(judul: str) -> bool:
+    judul_lower = (judul or "").lower()
+    return any(kata in judul_lower for kata in GENERIC_BLOCKLIST)
 
 # Header supaya request kita dianggap seperti browser biasa, bukan bot
 HEADERS = {
@@ -225,8 +239,8 @@ def fetch_news_for_term(term: str):
 
     results = []
     for entry in feed.entries:
-        if is_berita_luar_negeri(entry.title):
-            continue  # lewati berita yang kelihatan dari luar negeri
+        if is_berita_luar_negeri(entry.title) or is_berita_tidak_relevan(entry.title):
+            continue  # lewati berita luar negeri atau yang tidak relevan
         tanggal_iso = ""
         if getattr(entry, "published_parsed", None):
             try:
@@ -666,7 +680,10 @@ def index():
            LIMIT 200"""
     ).fetchall()
     # Saring juga berita lama yang mungkin sudah tersimpan sebelum filter ini ada
-    berita = [b for b in semua_berita if not is_berita_luar_negeri(b["judul"])][:100]
+    berita = [
+        b for b in semua_berita
+        if not is_berita_luar_negeri(b["judul"]) and not is_berita_tidak_relevan(b["judul"])
+    ][:100]
     total = conn.execute("SELECT COUNT(*) as c FROM berita").fetchone()["c"]
     kw_rows = get_all_keywords_rows()
     conn.close()
